@@ -1,4 +1,3 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node'
 import crypto from 'crypto'
 import { Redis } from '@upstash/redis'
 
@@ -23,10 +22,7 @@ function verifyProxySignature(query: any, secret: string) {
   return digest === signature
 }
 
-export default async function handler(
-  req: VercelRequest,
-  res: VercelResponse
-) {
+export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     return res.status(405).json({ ok: false })
   }
@@ -43,15 +39,12 @@ export default async function handler(
 
   const key = `reserve:variant:${variant_id}`
 
-  const reserved_until = new Date(
-    Date.now() + HOLD_SECONDS * 1000
-  ).toISOString()
+  const reserved_until = new Date(Date.now() + HOLD_SECONDS * 1000).toISOString()
 
-  const success = await redis.set(
-    key,
-    JSON.stringify({ reserved_until }),
-    { nx: true, ex: HOLD_SECONDS }
-  )
+  const success = await redis.set(key, JSON.stringify({ reserved_until }), {
+    nx: true,
+    ex: HOLD_SECONDS,
+  })
 
   if (success) {
     return res.status(200).json({
@@ -68,3 +61,4 @@ export default async function handler(
     reserved_until: parsed?.reserved_until || null,
   })
 }
+

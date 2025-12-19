@@ -21,63 +21,64 @@ function verifyProxySignature(query: any, secret: string) {
   return digest === signature;
 }
 
+function keyFor(variantId: string) {
+  return `reserve:variant:${variantId}`;
+}
+
 export default async function handler(req: any, res: any) {
-  try {
-    if (req.method !== "POST") {
-      return res.status(405).json({ ok: false });
+  const secret = process.env.SHOPIFY_PROXY_SECRET;
+  if (!secret || !verifyProxySignature(req.query, secret)) {
+    return res.status(401).json({ ok: false, error: "unauthorized" });
+  }
+
+  // ✅ CHECK (para pintar “RESERVADO” al cargar la página)
+  if (req.method === "GET") {
+    const variant_id = String(req.query?.variant_id || "");
+    if (!variant_id) {
+      return res.status(400).json({ ok: false, error: "missing_variant" });
     }
 
-    const secret = process.env.SHOPIFY_PROXY_SECRET;
-    if (!secret || !verifyProxySignature(req.query, secret)) {
-      return res.status(401).json({ ok: false, error: "unauthorized" });
-    }
+    const existing = await redis.get(keyFor(variant_id));
+    const parsed = existing ? JSON.parse(existing as string) : null;
 
+    return res.status(200).json({
+      ok: true,
+      reserved: !!parsed?.reserved_until,
+      reserved_until: parsed?.reserved_until || null,
+    });
+  }
+
+  // ✅ RESERVE (intenta reservar antes de add-to-cart)
+  if (req.method === "POST") {
     const { variant_id } = req.body || {};
     if (!variant_id) {
       return res.status(400).json({ ok: false, error: "missing_variant" });
     }
 
-    const key = `reserve:variant:${variant_id}`;
     const reserved_until = new Date(Date.now() + HOLD_SECONDS * 1000).toISOString();
 
-    // NX + expiración (solo reserva si no existe)
-    const success = await redis.set(key, JSON.stringify({ reserved_until }), {
-      nx: true,
-      ex: HOLD_SECONDS,
-    });
+    const success = await redis.set(
+      keyFor(String(variant_id)),
+      JSON.stringify({ reserved_until }),
+      { nx: true, ex: HOLD_SECONDS }
+    );
 
     if (success) {
       return res.status(200).json({ ok: true, reserved_until });
     }
 
-    // Ya existe: obtenemos el valor actual sin romper si no es string JSON
-    const existing = await redis.get(key);
-
-    let parsed: any = null;
-
-    if (typeof existing === "string") {
-      try {
-        parsed = JSON.parse(existing);
-      } catch {
-        parsed = null;
-      }
-    } else if (existing && typeof existing === "object") {
-      // A veces Upstash puede devolver un objeto ya parseado
-      parsed = existing;
-    }
+    const existing = await redis.get(keyFor(String(variant_id)));
+    const parsed = existing ? JSON.parse(existing as string) : null;
 
     return res.status(409).json({
       ok: false,
-      reserved_until: parsed?.reserved_until ?? null,
-    });
-  } catch (err: any) {
-    // Nunca devuelvas HTML: siempre JSON para que el frontend no explote
-    return res.status(500).json({
-      ok: false,
-      error: "internal_error",
-      message: err?.message || String(err),
+      error: "already_reserved",
+      reserved_until: parsed?.reserved_until || null,
     });
   }
+
+  return res.status(405).json({ ok: false });
 }
+
 
 

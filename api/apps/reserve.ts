@@ -21,9 +21,14 @@ function verifyProxySignature(query: any, secret: string) {
   return digest === signature;
 }
 
+function keyFor(variantId: string) {
+  return `reserve:variant:${variantId}`;
+}
+
 export default async function handler(req: any, res: any) {
-  // App proxy normalmente llega como GET/POST, soportemos ambos
-  if (req.method !== "POST" && req.method !== "GET") {
+  // Shopify App Proxy normalmente llama como GET.
+  // Permitimos GET y POST por si quieres usar POST desde el frontend.
+  if (req.method !== "GET" && req.method !== "POST") {
     return res.status(405).json({ ok: false });
   }
 
@@ -32,9 +37,7 @@ export default async function handler(req: any, res: any) {
     return res.status(401).json({ ok: false, error: "unauthorized" });
   }
 
-  const action = String(req.query?.action || "reserve"); // reserve | release | check
-
-  // variant_id puede venir en query o body
+  const action = String(req.query?.action || "reserve"); // reserve | check | release
   const variant_id =
     String(req.query?.variant_id || req.body?.variant_id || "").trim();
 
@@ -42,28 +45,30 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({ ok: false, error: "missing_variant" });
   }
 
-  const key = `reserve:variant:${variant_id}`;
+  const key = keyFor(variant_id);
 
+  // CHECK: ¿Está reservado?
+  if (action === "check") {
+    const existing = await redis.get(key);
+    const parsed = existing ? JSON.parse(existing as string) : null;
+
+    return res.status(200).json({
+      ok: true,
+      reserved: Boolean(parsed?.reserved_until),
+      reserved_until: parsed?.reserved_until || null,
+    });
+  }
+
+  // RELEASE: liberar reserva (al quitar del carrito)
   if (action === "release") {
     await redis.del(key);
     return res.status(200).json({ ok: true, released: true });
   }
 
-  if (action === "check") {
-    const existing = await redis.get(key);
-    if (!existing) {
-      return res.status(200).json({ ok: true, reserved: false, reserved_until: null });
-    }
-    const parsed = typeof existing === "string" ? JSON.parse(existing) : existing;
-    return res.status(200).json({
-      ok: true,
-      reserved: true,
-      reserved_until: parsed?.reserved_until || null,
-    });
-  }
-
-  // action === "reserve"
-  const reserved_until = new Date(Date.now() + HOLD_SECONDS * 1000).toISOString();
+  // RESERVE (default): intenta reservar con NX
+  const reserved_until = new Date(
+    Date.now() + HOLD_SECONDS * 1000
+  ).toISOString();
 
   const success = await redis.set(key, JSON.stringify({ reserved_until }), {
     nx: true,
@@ -71,7 +76,11 @@ export default async function handler(req: any, res: any) {
   });
 
   if (success) {
-    return res.status(200).json({ ok: true, reserved: true, reserved_until });
+    return res.status(200).json({
+      ok: true,
+      reserved: true,
+      reserved_until,
+    });
   }
 
   const existing = await redis.get(key);
@@ -83,6 +92,7 @@ export default async function handler(req: any, res: any) {
     reserved_until: parsed?.reserved_until || null,
   });
 }
+
 
 
 

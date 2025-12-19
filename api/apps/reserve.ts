@@ -26,8 +26,7 @@ function keyFor(variantId: string) {
 }
 
 export default async function handler(req: any, res: any) {
-  // Shopify App Proxy normalmente llama como GET.
-  // Permitimos GET y POST por si quieres usar POST desde el frontend.
+  // Shopify App Proxy llega como GET. Permitimos GET/POST por si pruebas con POST.
   if (req.method !== "GET" && req.method !== "POST") {
     return res.status(405).json({ ok: false });
   }
@@ -38,8 +37,7 @@ export default async function handler(req: any, res: any) {
   }
 
   const action = String(req.query?.action || "reserve"); // reserve | check | release
-  const variant_id =
-    String(req.query?.variant_id || req.body?.variant_id || "").trim();
+  const variant_id = String(req.query?.variant_id || req.body?.variant_id || "").trim();
 
   if (!variant_id) {
     return res.status(400).json({ ok: false, error: "missing_variant" });
@@ -47,7 +45,6 @@ export default async function handler(req: any, res: any) {
 
   const key = keyFor(variant_id);
 
-  // CHECK: ¿Está reservado?
   if (action === "check") {
     const existing = await redis.get(key);
     const parsed = existing ? JSON.parse(existing as string) : null;
@@ -59,16 +56,13 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  // RELEASE: liberar reserva (al quitar del carrito)
   if (action === "release") {
     await redis.del(key);
     return res.status(200).json({ ok: true, released: true });
   }
 
-  // RESERVE (default): intenta reservar con NX
-  const reserved_until = new Date(
-    Date.now() + HOLD_SECONDS * 1000
-  ).toISOString();
+  // action === reserve
+  const reserved_until = new Date(Date.now() + HOLD_SECONDS * 1000).toISOString();
 
   const success = await redis.set(key, JSON.stringify({ reserved_until }), {
     nx: true,
@@ -76,11 +70,7 @@ export default async function handler(req: any, res: any) {
   });
 
   if (success) {
-    return res.status(200).json({
-      ok: true,
-      reserved: true,
-      reserved_until,
-    });
+    return res.status(200).json({ ok: true, reserved: true, reserved_until });
   }
 
   const existing = await redis.get(key);
